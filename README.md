@@ -1,3 +1,7 @@
+
+
+https://github.com/user-attachments/assets/f59b1bc0-cfc4-4a85-8040-ccc95ed83e81
+
 # C++ Cloth Simulation (Vellum)
 
 A real-time **mass–spring cloth simulator** written in modern C++ and rendered with **OpenGL 3.3 Core**. Particles are connected on a grid by structural springs; motion is integrated with **Verlet integration**, and spring lengths are enforced each frame with **positional constraint relaxation**. The result is a stable, interactive cloth that sags under gravity, can be reset, re-rendered in different modes, and manipulated with the mouse.
