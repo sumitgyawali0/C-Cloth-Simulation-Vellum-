@@ -1,0 +1,34 @@
+# Build outputs
+build/
+test_opengl/build/
+out/
+cmake-build-*/
+
+# CMake / IDE
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+.vs/
+.vscode/
+*.user
+*.suo
+*.sln.docstates
+x64/
+Debug/
+Release/
+*.dir/
+
+# Downloaded archives (setup scripts re-fetch these)
+*.zip
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Logs
+*.log
+vcpkg.applocal.log

@@ -1,0 +1,32 @@
+cmake_minimum_required(VERSION 3.10)
+project(MinimalOpenGLTest)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Find OpenGL
+find_package(OpenGL REQUIRED)
+
+# Source files
+set(SOURCES minimal_test.cpp)
+
+# Create executable
+add_executable(${PROJECT_NAME} ${SOURCES})
+
+# Include directories
+target_include_directories(${PROJECT_NAME} PRIVATE
+    ../external/include
+    ${OPENGL_INCLUDE_DIRS}
+)
+
+# Link libraries
+target_link_libraries(${PROJECT_NAME}
+    ${OPENGL_LIBRARIES}
+    ${CMAKE_SOURCE_DIR}/../external/lib/glfw3.lib
+    ${CMAKE_SOURCE_DIR}/../external/lib/glew32.lib
+)
+
+# Set output directory
+set_target_properties(${PROJECT_NAME} PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)

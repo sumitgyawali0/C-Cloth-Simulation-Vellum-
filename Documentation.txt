@@ -1,0 +1,362 @@
+1) goals & scope
+
+rectangular cloth as an M×N grid of particles
+
+mass–spring model with structural springs (horiz/vert)
+
+Verlet integration + positional constraint relaxation
+
+pin the top row (or just top corners)
+
+start with line rendering, then upgrade to shaded triangle mesh
+
+optional: damping, wind, sphere collision, shear/bend springs
+
+2) project structure
+/src
+  main.cpp
+  window_gl.cpp / .h        (GLFW/GLEW, input, loop)
+  cloth.cpp / .h            (simulation state & update)
+  renderer.cpp / .h         (VBO/VAO, shaders, draw)
+  shader.cpp / .h           (compile/link helpers)
+  math_types.hpp            (glm, small helpers)
+assets/
+  cloth.vert
+  cloth.frag
+
+3) core data model
+struct Particle {
+  glm::vec3 pos;
+  glm::vec3 prevPos;    // for Verlet
+  bool fixed = false;
+};
+
+struct Spring {
+  int i, j;             // indices into particle array
+  float restLength;
+  float k;              // stiffness (e.g., 800–5000)
+};
+
+struct Cloth {
+  int cols, rows;       // grid size (width x height)
+  float spacing;        // rest distance between neighbors
+  std::vector<Particle> particles;
+  std::vector<Spring> springs; // structural, later shear/bend
+  // render buffers (for modern GL path):
+  GLuint vao=0, vbo_pos=0, vbo_norm=0, ebo=0;
+  std::vector<unsigned> indices; // for triangles
+};
+
+
+index mapping helper:
+
+inline int idx(int x, int y, int cols) { return y*cols + x; }
+
+4) initialization
+
+grid layout
+
+for (int y=0; y<rows; ++y)
+  for (int x=0; x<cols; ++x) {
+    Particle p;
+    p.pos     = glm::vec3(x*spacing, -y*spacing, 0.0f);
+    p.prevPos = p.pos;
+    p.fixed   = (y==0 && (x==0 || x==cols-1)); // start with two pins
+    cloth.particles.push_back(p);
+  }
+
+
+springs (structural)
+
+auto addSpring = [&](int a, int b) {
+  Spring s; s.i=a; s.j=b; s.restLength=spacing; s.k=1500.0f;
+  cloth.springs.push_back(s);
+};
+for (int y=0; y<rows; ++y)
+  for (int x=0; x<cols; ++x) {
+    int a = idx(x,y,cols);
+    if (x+1<cols) addSpring(a, idx(x+1,y,cols));
+    if (y+1<rows) addSpring(a, idx(x,y+1,cols));
+  }
+
+
+(you can add shear: (x+1,y+1) and (x-1,y+1); bend: (x+2,y), (x,y+2) later.)
+
+render indices (for solid cloth)
+
+for (int y=0; y<rows-1; ++y)
+  for (int x=0; x<cols-1; ++x) {
+    unsigned a=idx(x,y,cols), b=idx(x+1,y,cols);
+    unsigned c=idx(x,y+1,cols), d=idx(x+1,y+1,cols);
+    // two triangles: a-b-c, b-d-c
+    indices.insert(indices.end(), {a,b,c, b,d,c});
+  }
+
+5) simulation step (per frame)
+
+constants (start simple, tune later):
+
+gravity g = (0, -9.81, 0)
+
+time step dt = 1/60 (or actual frame delta clamped)
+
+constraint iterations iterations = 5–15
+
+damping (Verlet) via “velocity scaling” or air drag factor.
+
+5.1 integration (Verlet)
+
+For each non-fixed particle:
+
+glm::vec3 acc = gravity; // + wind/other forces later
+glm::vec3 cur = p.pos;
+glm::vec3 vel = p.pos - p.prevPos;          // implicit velocity
+float damping = 0.994f;                      // light energy loss
+p.pos = p.pos + damping*vel + acc*dt*dt;    // Verlet update
+p.prevPos = cur;
+
+5.2 spring constraints (positional relaxation)
+
+Iterate several times for stability:
+
+for (int it=0; it<iterations; ++it) {
+  for (auto& s : springs) {
+    Particle& A = particles[s.i];
+    Particle& B = particles[s.j];
+
+    glm::vec3 delta = B.pos - A.pos;
+    float dist = glm::length(delta);
+    if (dist < 1e-6f) continue;
+
+    float diff = (dist - s.restLength) / dist;  // stretch ratio
+    // stiffness factor (0..1) per iteration (empirical):
+    float alpha = 0.5f;
+
+    if (!A.fixed && !B.fixed) {
+      A.pos += alpha * delta * diff * 0.5f;
+      B.pos -= alpha * delta * diff * 0.5f;
+    } else if (!A.fixed) {
+      A.pos += alpha * delta * diff;
+    } else if (!B.fixed) {
+      B.pos -= alpha * delta * diff;
+    }
+  }
+}
+
+5.3 collisions (optional beginner sphere)
+
+Sphere with center C and radius R:
+
+for (auto& p : particles) {
+  if (p.fixed) continue;
+  glm::vec3 d = p.pos - C;
+  float L = glm::length(d);
+  if (L < R) p.pos = C + (d / L) * R; // project to sphere surface
+}
+
+6) rendering
+6.1 start simple: lines
+
+draw springs as GL_LINES (or GL_LINE_STRIP per row & column)
+
+immediate mode is fine for the first pass: glBegin(GL_LINES) … (or just upload to VBO each frame)
+
+6.2 modern GL path (recommended soon)
+
+positions VBO: cols*rows vec3 updated every frame
+
+normals VBO (for lighting): recompute each frame from triangles
+
+EBO: static indices as above
+
+vertex shader: standard MVP, pass normal
+
+fragment shader: basic Blinn/Phong or lambert + ambient
+
+normals (recompute)
+normals.assign(particles.size(), glm::vec3(0));
+for (each triangle a,b,c using indices) {
+  glm::vec3 n = glm::normalize(glm::cross(
+      particles[b].pos - particles[a].pos,
+      particles[c].pos - particles[a].pos));
+  normals[a] += n; normals[b] += n; normals[c] += n;
+}
+for (auto& n : normals) n = glm::normalize(n);
+
+upload
+glBindBuffer(GL_ARRAY_BUFFER, vbo_pos);
+glBufferSubData(GL_ARRAY_BUFFER, 0, positions_bytes, positions_ptr);
+
+glBindBuffer(GL_ARRAY_BUFFER, vbo_norm);
+glBufferSubData(GL_ARRAY_BUFFER, 0, normals_bytes, normals_ptr);
+
+draw
+glBindVertexArray(vao);
+glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, 0);
+
+7) time step & stability
+
+Prefer fixed dt (e.g., 1/120) and accumulate frame time:
+
+run the simulation multiple times per frame if needed.
+
+Increase constraint iterations when cloth is rubbery or exploding.
+
+Keep stiffness per-iteration ≤ ~0.6 for stability.
+
+Add global damping (0.99–0.999) to tame jitter.
+
+Scale your units consistently: spacing≈0.1–0.3 meters works well with g=9.81.
+
+8) interaction & controls
+
+keys to toggle pins (click a particle & toggle fixed)
+
+reset cloth
+
+toggle wireframe/solid
+
+adjust parameters live:
+
+iterations
+
+stiffness k or per-iteration alpha
+
+damping
+
+wind strength/direction
+
+9) wind (nice visual payoff)
+
+Simple directional wind:
+
+glm::vec3 wind = windDir * windStrength;
+for (each triangle a,b,c) {
+  glm::vec3 n = triangleNormal(a,b,c);
+  float forceMag = glm::dot(n, wind);
+  glm::vec3 f = n * forceMag;
+  // distribute to particles (accumulate as pseudo-positions in Verlet)
+  if (!A.fixed) A.pos += f * dt*dt * w;
+  if (!B.fixed) B.pos += f * dt*dt * w;
+  if (!C.fixed) C.pos += f * dt*dt * w;
+}
+
+
+(You can also just add to acc pre-Verlet.)
+
+10) stepping plan (milestones)
+
+lines only, 20×20 grid, pins at corners, gravity + constraints → see it sag
+
+add damping (Verlet velocity scale 0.99–0.997)
+
+add iterations slider (2→15) and feel the stiffness change
+
+sphere collision
+
+shear/bend springs (rest length spacing*sqrt(2) for shear; 2*spacing for bend)
+
+switch to triangles + normals
+
+add a simple shader (ambient + diffuse)
+
+wind
+
+UI tweaks & performance pass (avoid reallocations, reuse buffers)
+
+11) performance tips
+
+keep particles moderate (≤ 80×80) while iterating
+
+keep indices static; only update position/normal VBOs
+
+avoid glBufferData per-frame; prefer glBufferSubData or persistently mapped buffers
+
+pack positions in a contiguous array for quick upload
+
+use std::vector.reserve to avoid reallocations in normals/indices
+
+12) common pitfalls
+
+exploding cloth: too large dt, too few iterations, too strong stiffness per iteration
+
+jelly cloth: increase iterations or add bend springs
+
+jitter: increase damping a bit, clamp dt, cap wind strength
+
+normals flicker: ensure consistent triangle winding & normalize after accumulate
+
+pins drifting: don’t move fixed particles in constraints or integration
+
+13) minimal shaders (modern path)
+
+vertex (cloth.vert)
+
+#version 330 core
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNormal;
+uniform mat4 model, view, projection;
+out vec3 vNormal;
+out vec3 vWorldPos;
+void main(){
+  vec4 wp = model * vec4(aPos,1.0);
+  vWorldPos = wp.xyz;
+  vNormal = mat3(transpose(inverse(model))) * aNormal;
+  gl_Position = projection * view * wp;
+}
+
+
+fragment (cloth.frag)
+
+#version 330 core
+in vec3 vNormal;
+in vec3 vWorldPos;
+out vec4 FragColor;
+uniform vec3 lightPos;
+uniform vec3 baseColor;
+void main(){
+  vec3 N = normalize(vNormal);
+  vec3 L = normalize(lightPos - vWorldPos);
+  float diff = max(dot(N,L), 0.0);
+  vec3 color = 0.15*baseColor + diff*baseColor;
+  FragColor = vec4(color, 1.0);
+}
+
+14) testing & verification
+
+start with rows=cols=10, iterations=10, spacing=0.2, damping=0.995
+
+verify: static rest shape (no gravity) stays stable
+
+add gravity: cloth sags; edges bow inward slightly (normal)
+
+tug test: temporarily unpin one corner and re-pin; ensure it reacts smoothly
+
+increase iterations: cloth becomes stiffer (less stretch)
+
+15) extensions (after MVP)
+
+self-collision (broad-phase grid + particle/triangle tests)
+
+tearing (remove springs when strain > threshold)
+
+GPU (compute shader for constraints)
+
+pin painting (mouse hover to toggle pins)
+
+texturing (UV from grid coordinates)
+
+multiple collisions (plane, boxes, capsules)
+
+tiny pseudocode summary
+// per frame:
+dt = clamp(actual_dt, 0, 1/30);
+substeps = ceil(dt / (1/120));
+for s in 1..substeps:
+  verletIntegrate(particles, gravity, 1/120, damping);
+  for it in 1..iterations:
+    satisfySpringConstraints(particles, springs, alpha);
+    sphereCollisions(particles, sphere);
+recomputeNormals(particles, indices, normals);
+uploadToGPU(positions, normals);
+draw();
